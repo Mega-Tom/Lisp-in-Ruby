@@ -2,8 +2,76 @@ require 'test/unit'
 include Test::Unit::Assertions
 
 EMPTY = Object.new
+LITERAL_RE = /\w|[+\-*]/
 
 class Token
+    def initialize type, value=nil
+        @type = type
+        @value = value
+    end
+    def inspect
+        if @value
+            "#{@type}: #{@value}"
+        else
+            "#{@type}"
+        end
+    end
+
+    attr_reader :type, :value
+end
+
+def tokenize code
+    line = 1
+    mode = :start
+    str = ""
+    tokens = []
+    code.each_char do |c|
+        line += 1 if c == '\n'
+        if mode == :literal
+            if LITERAL_RE === c
+                str += c
+            else
+                tokens.push Token.new(:literal, str)
+                mode = :start
+            end
+        end
+        if mode == :string_escape
+            str += c # TODO add '\n' etc.
+            mode = :string
+        elsif mode == :string
+            if '"' == c
+                tokens.push Token.new(:string, str)
+                mode = :start
+                next
+            elsif '\\' == c
+                mode = :string_escape
+            else
+                str += c
+            end
+        end
+        if mode == :start
+            case c
+            when '('
+                tokens.push Token.new(:open)
+            when ')'
+                tokens.push Token.new(:close)
+            when LITERAL_RE
+                str = c
+                mode = :literal
+            when '"'
+                str = ''
+                mode = :string
+            when /\s/
+                mode = :start
+            else
+                raise "Unexpected char `#{c}' (line #{line})"
+            end
+        end
+    end
+    tokens
+end
+
+class Node
     def initialize type, value
         @type = type
         @value = value
@@ -11,76 +79,43 @@ class Token
     attr_reader :type, :value
     def self.make(str)
         if /^\d+$/ === str
-            return Token.new :int, str.to_i
+            return Node.new :int, str.to_i
         else
-            return Token.new :var, str
+            return Node.new :var, str
         end
     end
 end
-
-class Cons
-    def initialize car, cdr
-        @car = car
-        @cdr = cdr
-    end
-    attr_reader :car, :cdr
-    def self.make_list values
-        if values.length == 0
-            EMPTY
-        else
-            Cons.new(values.shift, Cons.make_list(values))
-        end
-    end
-    def tail
-        if @cdr.class == Cons
-            "#{@car} #{@cdr.tail}"
-        elsif @cdr==EMPTY
-            "#{@car})"
-        else
-            "#{@car} . #{@cdr})"
-        end
-    end
-    def to_s
-        "(#{self.tail}"
-    end
-end
-
-def parse code
+def parse tokens
     index = 0
     a = []
-    while index < code.length
-        token, index = get_token code, index
-        a.push(token) if token
+    while index < tokens.length
+        node, index = get_node tokens, index
+        a.push(node) if node
     end
     a
 end
 
-def get_token code, index
-    index += 1 while /\s/ === code[index]
-    
-    case code[index]
-    when /\w|[+\-*]/
-        i = index
-        i += 1 while /\w|[+\-*]/ === code[i]
-        [Token.make(code[index ... i]), i]
-    when '('
+def get_node tokens, index
+    return [nil, index] if tokens[index].nil?
+    case tokens[index].type
+    when :literal
+        [Node.make(tokens[index].value), index + 1]
+    when :open
         list = []
         i = index + 1
         while true
-            token,i = get_token(code, i)
-            break if token.nil?
-            list.push(token)
-            raise "Unfinished list!" if i >= code.length
+            node, i = get_node(tokens, i)
+            break if node.nil?
+            list.push(node)
+            raise "Unfinished list!" if i >= tokens.length
         end
-        [Token.new(:list, list), i]
-    when ')'
-        return [nil, index+1]
-    when '"'
-        get_string code, index+1
-    when nil
-        return [nil,index]
+        [Node.new(:list, list), i]
+    when :close
+        [nil, index+1]
+    when :string
+        [Node.new(:str, tokens[index].value), index+1]
     else
-        raise "Unknow sym: #{code[index]} (in `#{code[index - 10...index + 10]}')"
+        raise "Unknow token: #{token[index]}"
     end
 end
 
@@ -90,7 +125,7 @@ def get_string code, index
         i+=1
     end
     raise "unfinished string" if i == code.length
-    [Token.new(:str, code[index ... i]), i+1]
+    [Node.new(:str, code[index ... i]), i+1]
 end
 
 def boolize thing
@@ -131,34 +166,61 @@ class Context
     def has_var? var
         @vars.key?(var) || parent&.has_var?(var)
     end
-    def defun tokens
-        assert tokens[0].type == :var
-        assert tokens[1].type == :list
-        assert tokens[1].value.all?{|param| param.type == :var}
-        @funcs[tokens[0].value] = tokens[1..-1]
+    def defun nodes
+        assert nodes[0].type == :var
+        assert nodes[1].type == :list
+        assert nodes[1].value.all?{|param| param.type == :var}
+        @funcs[nodes[0].value] = nodes[1..-1]
     end
     def fun name
         @funcs[name] || (@parent&.fun(name))
     end
 end
 
-def execute tokens, context = Context.new
+class Cons
+    def initialize car, cdr
+        @car = car
+        @cdr = cdr
+    end
+    attr_reader :car, :cdr
+    def self.make_list values
+        if values.length == 0
+            EMPTY
+        else
+            Cons.new(values.shift, Cons.make_list(values))
+        end
+    end
+    def tail
+        if @cdr.class == Cons
+            "#{@car} #{@cdr.tail}"
+        elsif @cdr==EMPTY
+            "#{@car})"
+        else
+            "#{@car} . #{@cdr})"
+        end
+    end
+    def to_s
+        "(#{self.tail}"
+    end
+end
+
+def execute nodes, context = Context.new
     ret = nil
-    tokens.each do |t|
+    nodes.each do |t|
         ret = evaluate t, context
     end
     ret
 end
-def evaluate token, context
-    if(token.type == :list)
-        assert token.value[0].type == :var
-        run_cmd(token.value[0].value, token.value[1..-1], context)
-    elsif token.type == :str
-        token.value
-    elsif token.type == :var
-        context[token.value]
-    elsif token.type == :int
-        token.value
+def evaluate node, context
+    if(node.type == :list)
+        assert node.value[0].type == :var
+        run_cmd(node.value[0].value, node.value[1..-1], context)
+    elsif node.type == :str
+        node.value
+    elsif node.type == :var
+        context[node.value]
+    elsif node.type == :int
+        node.value
     end
 end
 def run_cmd function, inputs, context
@@ -261,4 +323,4 @@ if ARGV.length == 0
 else
     input = File.read(ARGV[0])
 end
-execute parse(input)
+execute parse(p tokenize(input))
