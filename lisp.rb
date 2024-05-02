@@ -143,7 +143,7 @@ end
 
 class Context
     def initialize parent=nil
-        @vars = {}
+        @vars = {"nil"=>EMPTY}
         @funcs = {}
         @parent = parent
     end
@@ -198,6 +198,22 @@ class Cons
     end
     def to_s
         "(#{self.tail}"
+    end
+end
+
+class Lambda
+    def initialize instructions, context
+        @code = instructions[1..-1]
+        @params = instructions[0].value
+        @context = context
+    end
+    def run args, context
+        assert(@params.length == args.length)
+        inner_context = Context.new(@context)
+        @params.length.times do |i|
+            inner_context.set_local(@params[i].value, args[i])
+        end
+        execute @code, inner_context
     end
 end
 
@@ -312,6 +328,14 @@ def run_cmd function, inputs, context
         (inputs.map do |t|
             evaluate(t, context).to_s
         end).sum('')
+    when 'lambda'
+        Lambda.new inputs, context
+    when 'funcall'
+        fun = evaluate inputs[0], context
+        assert(Lambda === fun)
+        fun.run(inputs[1..-1].map do |t|
+            evaluate t, context
+        end, context)
     else
         raise "function #{function} undefined"
     end
@@ -322,4 +346,4 @@ if ARGV.length == 0
 else
     input = File.read(ARGV[0])
 end
-execute parse(p tokenize(input))
+execute parse(tokenize(input))
