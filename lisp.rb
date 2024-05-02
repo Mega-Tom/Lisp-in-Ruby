@@ -301,6 +301,12 @@ def run_cmd function, inputs, context
     when 'cdr'
         assert inputs.length == 1
         evaluate(inputs[0], context).cdr
+    when /^c[ad]+r$/
+        val = evaluate(inputs[0], context)
+        function[1...-1].reverse.each_char do |c|
+            val = (c == 'a') ? val.car : val.cdr
+        end
+        val
     when 'list'
         Cons.make_list(inputs.map do |t|
             evaluate t, context
