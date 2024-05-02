@@ -148,10 +148,7 @@ class Context
         @parent = parent
     end
     def [] var
-        val = @vars[var]
-        val = @parent[var] if @perent and not val
-        raise "undefined variable #{var}" if val.nil?
-        val
+        @vars.has_key?(var) ? @vars[var] : @parent[var]
     end
     def []= var, val
         if @parent && !@vars.key?(var) and @parent.has_var?(var)
@@ -218,7 +215,9 @@ def evaluate node, context
     elsif node.type == :str
         node.value
     elsif node.type == :var
-        context[node.value]
+        val = context[node.value]
+        raise "undefined variable #{node.value}" if val.nil?
+        val
     elsif node.type == :int
         node.value
     end
